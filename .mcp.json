@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "sterile-nu-bbn": {
+      "command": "python",
+      "args": ["-m", "mcp_server"],
+      "cwd": "."
+    }
+  }
+}
