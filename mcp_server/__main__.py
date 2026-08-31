@@ -1,4 +1,5 @@
-"""Allow running as `python -m mcp_server`."""
-from mcp_server import mcp
+from .cli import main
 
-mcp.run(transport="stdio")
+
+if __name__ == "__main__":
+    raise SystemExit(main())

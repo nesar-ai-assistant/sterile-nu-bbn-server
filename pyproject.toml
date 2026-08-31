@@ -15,10 +15,8 @@ dependencies = [
     "matplotlib>=3.8",
 ]
 
-[project.optional-dependencies.mcp]
-mcp = ["mcp[cli]>=1.27,<2", "pydantic>=2,<3"]
-
 [project.optional-dependencies]
+mcp = ["mcp[cli]>=1.27,<2", "pydantic>=2,<3"]
 dev = ["pytest", "pytest-asyncio"]
 notebook = ["jupyter", "ipykernel"]
 

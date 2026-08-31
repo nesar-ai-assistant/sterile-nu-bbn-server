@@ -1,7 +1,7 @@
 """MCP server entry point for sterile-nu-bbn-server (MCP SDK v2)."""
 from __future__ import annotations
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.fastmcp import FastMCP
 
 from tools.sterile_tools import (
     describe_sterile_nu_tools,
@@ -13,9 +13,9 @@ from tools.sterile_tools import (
     plot_bbn_vs_neff,
 )
 
-mcp = MCPServer(
+mcp = FastMCP(
     name="sterile-nu-bbn-server",
-    description=(
+    instructions=(
         "Bridges sterile neutrino particle physics with BBN cosmology. "
         "Predicts N_eff, primordial abundances, X-ray lines, and "
         "compares against real observational data."
