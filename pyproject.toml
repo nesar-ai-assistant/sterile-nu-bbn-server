@@ -21,7 +21,7 @@ dev = ["pytest", "pytest-asyncio"]
 notebook = ["jupyter", "ipykernel"]
 
 [tool.mcp-server]
-tool_modules = ["tools"]
+tool_modules = ["tools", "mcp_server.dispatch"]
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -13,6 +13,13 @@ from tools.sterile_tools import (
     plot_bbn_vs_neff,
 )
 
+from mcp_server.dispatch import (
+    set_dispatch,
+    get_dispatch,
+    auth_status,
+    export_dispatch_pack,
+)
+
 mcp = FastMCP(
     name="sterile-nu-bbn-server",
     instructions=(
@@ -128,3 +135,11 @@ def plot_bbn_neff(
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")
+
+
+# ── Dispatch tools ──────────────────────────────────────────────────
+
+mcp.tool()(set_dispatch)
+mcp.tool()(get_dispatch)
+mcp.tool()(auth_status)
+mcp.tool()(export_dispatch_pack)
