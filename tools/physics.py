@@ -34,6 +34,38 @@ T_NU_OVER_T_GAMMA = (4.0 / 11.0) ** (1.0 / 3.0)
 # Cosmological parameters (Planck 2018 best-fit)
 OMEGA_B_H2 = 0.02237
 
+# Omega h^2 of one thermal neutrino species per eV of mass is 1/93.14
+OMEGA_NU_H2_PER_EV_INV = 93.14
+
+# Regime boundaries for the Delta-N_eff-only treatment of BBN
+RELATIVISTIC_AT_BBN_MAX_EV = 1e5   # m_s << T_BBN ~ 1 MeV
+DECAY_PHYSICS_MIN_EV = 1e6         # >= ~1 MeV: non-relativistic / decaying
+                                   # during BBN — injection not modeled
+
+
+def mass_regime(m_s_eV: float) -> dict:
+    """Which physics regime a mass falls in, and whether this server's
+    Delta-N_eff-only BBN treatment is valid there."""
+    if m_s_eV < 10.0:
+        name, valid, note = "eV (short-baseline)", True, (
+            "partial thermalisation uses a crude fit; a full QKE "
+            "(PRyMordial-nu-sterile) gives Delta N_eff = 0.93 at "
+            "Delta m^2 = 1 eV^2, sin^2 2theta = 1e-3 where this fit gives 0.40")
+    elif m_s_eV <= RELATIVISTIC_AT_BBN_MAX_EV:
+        name, valid, note = "keV (warm dark matter)", True, (
+            "relativistic at BBN; Delta N_eff follows from the DW relic density")
+    elif m_s_eV < DECAY_PHYSICS_MIN_EV:
+        name, valid, note = "100 keV - 1 MeV (transitional)", False, (
+            "becoming non-relativistic during BBN; Delta N_eff treatment "
+            "is approximate")
+    else:
+        name, valid, note = "MeV+ (heavy neutral lepton)", False, (
+            "OUTSIDE MODEL VALIDITY: non-relativistic and decaying during "
+            "BBN. Decay-product injection (photodissociation, hadronic "
+            "cascades) and entropy release are not modeled, so BBN numbers "
+            "here are not constraints")
+    return {"regime": name, "bbn_treatment_valid": valid, "note": note}
+
 
 # ── Observational data ──────────────────────────────────────────────
 
@@ -91,15 +123,14 @@ def dw_delta_neff(m_s_eV: float, sin2_2theta: float) -> float:
         dn = sin2_2theta * 10**2.6
         return min(dn, 1.0)
 
-    # keV-scale: DW non-resonant production
-    # Relic fraction of thermal: Abazajian (2006) Eq. 12
-    m_s_keV = m_s_eV / 1e3
-    f_thermal = 0.27 * (sin2_2theta / 1e-10) * (m_s_keV / 3.0) ** 1.8
-    f_thermal = min(f_thermal, 1.0)
-
-    if m_s_eV < 1.0:
-        return f_thermal
-    return f_thermal * min(1.0, (1.0 / m_s_eV) ** 0.5)
+    # >= 10 eV: non-resonant DW population. Its number density relative to
+    # one thermal neutrino species is fixed by the relic density,
+    # f = Omega_s h^2 * (93.14 eV / m_s), and since it is still relativistic
+    # at BBN (m_s << 1 MeV) it contributes Delta N_eff = f.
+    # (The previous keV formula scaled as (1/m_s[eV])^0.5 — a unit-dependent
+    # factor — and disagreed with dw_relic_density by 2-65x.)
+    f_thermal = dw_relic_density(m_s_eV, sin2_2theta) * OMEGA_NU_H2_PER_EV_INV / m_s_eV
+    return min(f_thermal, 1.0)
 
 
 def dw_relic_density(m_s_eV: float, sin2_2theta: float) -> float:
@@ -142,20 +173,42 @@ def sf_relic_density(
 # 3. BBN IMPACT -- parameterised predictions
 # ═══════════════════════════════════════════════════════════════════
 
+# Fits to the full PRyMordial network (63 reactions; Burns, Tait & Valli
+# 2023) on a grid Delta N_eff in [-1, 3], omega_b h^2 = 0.02237 x (1 +/- 0.15),
+# tau_n = 878.4 +/- 12 s.  Max deviation from PRyMordial: Yp 0.11%, D/H 0.25%,
+# Li7/H 0.14%.  Variables: dn = N_eff - 3.044, L = ln(omega_b h^2 / 0.02237),
+# dt = tau_n - 878.4 s.  Columns: 1, dn, dn^2, L, L^2, dn*L, dt.
+# (Previous coefficients had dYp/dN_eff = 0.0016 — 8x below the network's
+# 0.0126 — a wrong-sign tau_n dependence, and a wrong-sign Li7 slope.)
+_FIT_YP = (0.246815, 0.013509, -0.000762, 0.009955, 0.002371, -0.000218, 0.000207)
+_FIT_LN_DH = (0.893364, 0.135402, -0.007414, -1.63937, -0.105953, 0.016387, 0.000477)
+_FIT_LN_LI7 = (1.698117, -0.090997, 0.000958, 2.062926, -0.464125, 0.076803, 0.00042)
+BBN_FIT_RANGE = {"neff": (2.044, 6.044), "omega_b_h2": (0.0190, 0.0257),
+                 "tau_n": (866.4, 890.4)}
+
+
+def _bbn_basis(neff, omega_b_h2, tau_n):
+    dn = neff - 3.044
+    L = np.log(omega_b_h2 / 0.02237)
+    dt = tau_n - 878.4
+    return (1.0, dn, dn * dn, L, L * L, dn * L, dt)
+
+
+def _apply(coeffs, basis):
+    return sum(c * b for c, b in zip(coeffs, basis))
+
+
 def bbn_yp(
     neff: float = 3.044,
     omega_b_h2: float = OMEGA_B_H2,
     tau_n: float = 878.4,
 ) -> float:
-    """Primordial He-4 mass fraction Y_p.
+    """Primordial He-4 mass fraction Y_p (PRyMordial-calibrated fit).
 
-    Parameterisation from Pitrou+ (2018) Eq. 65-67, validated
-    against PArthENoPE and PRyMordial to <0.1%.
+    SM (N_eff = 3.044, Planck omega_b, tau_n = 878.4 s): 0.2468;
+    dYp/dN_eff = 0.0126 near the SM.
     """
-    dn = neff - 3.044
-    de = (omega_b_h2 - 0.02237) / 0.02237
-    dt = tau_n - 878.4
-    return 0.2485 + 0.0016 * dn + 0.014 * de - 0.0006 * dt
+    return float(_apply(_FIT_YP, _bbn_basis(neff, omega_b_h2, tau_n)))
 
 
 def bbn_dh(
@@ -163,21 +216,25 @@ def bbn_dh(
     omega_b_h2: float = OMEGA_B_H2,
     tau_n: float = 878.4,
 ) -> float:
-    """Primordial deuterium D/H * 10^5.
+    """Primordial deuterium D/H * 10^5 (PRyMordial-calibrated fit).
 
-    Parameterisation from Pitrou+ (2018), Pisanti+ (2021).
+    SM: 2.445 (the known ~1.5 sigma D/H tension with 2.547 +/- 0.025);
+    d(D/H x 1e5)/dN_eff = 0.33; D/H ~ omega_b^-1.64.
     """
-    dn = neff - 3.044
-    de = (omega_b_h2 - 0.02237) / 0.02237
-    dt = tau_n - 878.4
-    return 2.57 + 0.18 * dn - 6.0 * de + 0.035 * dt
+    return float(np.exp(_apply(_FIT_LN_DH, _bbn_basis(neff, omega_b_h2, tau_n))))
 
 
-def bbn_li7(neff: float = 3.044, omega_b_h2: float = OMEGA_B_H2) -> float:
-    """Primordial 7Li/H * 10^10.  The lithium problem: BBN ~5, obs ~1.6."""
-    dn = neff - 3.044
-    de = (omega_b_h2 - 0.02237) / 0.02237
-    return 5.0 + 0.3 * dn + 4.0 * de
+def bbn_li7(
+    neff: float = 3.044,
+    omega_b_h2: float = OMEGA_B_H2,
+    tau_n: float = 878.4,
+) -> float:
+    """Primordial 7Li/H * 10^10 (PRyMordial-calibrated fit).
+
+    SM: 5.47 vs observed ~1.6 (the lithium problem). Li7 DEcreases with
+    extra radiation (-0.48 per unit N_eff), so Delta N_eff cannot solve it.
+    """
+    return float(np.exp(_apply(_FIT_LN_LI7, _bbn_basis(neff, omega_b_h2, tau_n))))
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -187,14 +244,18 @@ def bbn_li7(neff: float = 3.044, omega_b_h2: float = OMEGA_B_H2) -> float:
 def radiative_decay_rate(m_s_eV: float, sin2_2theta: float) -> float:
     """Gamma(nu_s -> nu_a + gamma) in s^-1.
 
-    Gamma ~ 1.38e-29 s^-1 * (sin^2 2theta / 1e-10) * (m_s / keV)^5
+    Gamma = 9 alpha G_F^2 sin^2(2theta) m_s^5 / (1024 pi^4)
+          = 1.361e-32 s^-1 * (sin^2 2theta / 1e-10) * (m_s / keV)^5
+          (equivalently 1.36e-29 s^-1 for sin^2 2theta = 1e-7)
 
-    Ref: Pal & Wolfenstein, PRD 25, 766 (1982)
+    Ref: Pal & Wolfenstein, PRD 25, 766 (1982); Boyarsky+ (2009).
+    (Previously normalised to 1e-10 with the 1e-7 coefficient: 1014x too
+    fast, i.e. lifetimes 1014x too short and X-ray fluxes 1014x too high.)
     """
     m_s_keV = m_s_eV / 1e3
     if m_s_keV <= 0 or sin2_2theta <= 0:
         return 0.0
-    return 1.38e-29 * (sin2_2theta / 1e-10) * m_s_keV ** 5
+    return 1.361e-32 * (sin2_2theta / 1e-10) * m_s_keV ** 5
 
 
 def radiative_lifetime(m_s_eV: float, sin2_2theta: float) -> float:
@@ -252,20 +313,38 @@ def free_streaming_length_kpc(m_s_eV: float, mechanism: str = "DW") -> float:
 # 6. CHI-SQUARED & CONSTRAINTS
 # ═══════════════════════════════════════════════════════════════════
 
-def chi2_bbn(neff: float, omega_b_h2: float = OMEGA_B_H2) -> dict:
-    """Chi-squared of BBN predictions vs observed abundances."""
-    yp_pred = bbn_yp(neff, omega_b_h2)
-    dh_pred = bbn_dh(neff, omega_b_h2)
+# Delta chi^2 threshold for excluding a sterile neutrino at 95% CL: its only
+# BBN effect here is one number (Delta N_eff), so 1 degree of freedom.
+DELTA_CHI2_95 = 3.84
 
-    yp_obs = OBS_DATA["Yp"]
-    dh_obs = OBS_DATA["D_H"]
+# Theory (nuclear-rate) errors as quoted by PRyMordial
+THEORY_SIGMA = {"Yp": 0.0003, "D_H": 0.06}
 
-    sig_yp = np.sqrt(yp_obs.sigma ** 2 + 0.0003 ** 2)
-    sig_dh = np.sqrt(dh_obs.sigma ** 2 + 0.04 ** 2)
 
+def _chi2_parts(neff, omega_b_h2, tau_n):
+    yp_obs, dh_obs = OBS_DATA["Yp"], OBS_DATA["D_H"]
+    sig_yp = np.sqrt(yp_obs.sigma ** 2 + THEORY_SIGMA["Yp"] ** 2)
+    sig_dh = np.sqrt(dh_obs.sigma ** 2 + THEORY_SIGMA["D_H"] ** 2)
+    yp_pred = bbn_yp(neff, omega_b_h2, tau_n)
+    dh_pred = bbn_dh(neff, omega_b_h2, tau_n)
     c2_yp = ((yp_pred - yp_obs.value) / sig_yp) ** 2
     c2_dh = ((dh_pred - dh_obs.value) / sig_dh) ** 2
+    return yp_pred, dh_pred, sig_yp, sig_dh, c2_yp, c2_dh
+
+
+def chi2_bbn(neff: float, omega_b_h2: float = OMEGA_B_H2,
+             tau_n: float = 878.4) -> dict:
+    """Chi-squared of BBN predictions vs observed Yp and D/H.
+
+    `delta_chi2_vs_sm` (relative to N_eff = 3.044 at the same omega_b and
+    tau_n) is the quantity to exclude on: the SM itself carries chi2 ~ 2.7
+    from the D/H tension, which is not evidence about sterile neutrinos.
+    """
+    yp_pred, dh_pred, sig_yp, sig_dh, c2_yp, c2_dh = _chi2_parts(neff, omega_b_h2, tau_n)
+    yp_obs, dh_obs = OBS_DATA["Yp"], OBS_DATA["D_H"]
     c2 = c2_yp + c2_dh
+    *_, sm_yp, sm_dh = _chi2_parts(3.044, omega_b_h2, tau_n)
+    d_c2 = c2 - (sm_yp + sm_dh)
 
     return {
         "Yp_predicted": round(yp_pred, 5),
@@ -277,8 +356,10 @@ def chi2_bbn(neff: float, omega_b_h2: float = OMEGA_B_H2) -> dict:
         "DH5_sigma": round(sig_dh, 4),
         "chi2_DH": round(c2_dh, 4),
         "chi2_total": round(c2, 4),
+        "delta_chi2_vs_sm": round(d_c2, 4),
         "neff": neff,
-        "consistent_2sigma": bool(c2 < 6.18),
+        "excluded_95": bool(d_c2 > DELTA_CHI2_95),
+        "consistent_2sigma": bool(d_c2 <= DELTA_CHI2_95),
     }
 
 
@@ -347,6 +428,7 @@ def scan_parameter_space(
     neff_grid = np.zeros((n_m, n_theta))
     omega_grid = np.zeros((n_m, n_theta))
     chi2_grid = np.zeros((n_m, n_theta))
+    dchi2_grid = np.zeros((n_m, n_theta))
     tau_grid = np.zeros((n_m, n_theta))
 
     for i, ms in enumerate(m_arr):
@@ -359,7 +441,9 @@ def scan_parameter_space(
                 om = sf_relic_density(ms, s22t)
             neff_grid[i, j] = 3.044 + dn
             omega_grid[i, j] = om
-            chi2_grid[i, j] = chi2_bbn(3.044 + dn)["chi2_total"]
+            c = chi2_bbn(3.044 + dn)
+            chi2_grid[i, j] = c["chi2_total"]
+            dchi2_grid[i, j] = c["delta_chi2_vs_sm"]
             tau_grid[i, j] = radiative_lifetime(ms, s22t)
 
     return {
@@ -368,5 +452,6 @@ def scan_parameter_space(
         "neff": neff_grid,
         "omega_h2": omega_grid,
         "chi2_bbn": chi2_grid,
+        "delta_chi2_bbn": dchi2_grid,
         "lifetime_s": tau_grid,
     }
